@@ -7,27 +7,76 @@
  * so that when it attempts to create new connections, it can get the proper credentials.
  */
 import { Credentials } from 'aws-sdk';
-import { MongoError, MongoClient } from 'mongodb';
+import { MongoError } from 'mongodb';
 import crypto from 'crypto';
-// @ts-ignore
-import { maxWireVersion } from 'mongodb/lib/core/utils';
-// @ts-ignore
-import MongoDBAWS from 'mongodb/lib/core/auth/mongodb_aws';
+
+let MongoDBAWS: any,
+  maxWireVersion: any,
+  ns = (x: any) => x,
+  BSON: any,
+  mongoClientVersion = 3;
+
+try {
+  ({ MongoDBAWS } = require('mongodb/lib/cmap/auth/mongodb_aws'));
+  ({ maxWireVersion, ns } = require('mongodb/lib/utils'));
+  BSON = require('mongodb/lib/bson');
+  mongoClientVersion = 4;
+} catch (e) {
+  // mongodb client is version 3
+  MongoDBAWS = require('mongodb/lib/core/auth/mongodb_aws');
+  ({ maxWireVersion } = require('mongodb/lib/core/utils'));
+}
+
 import aws4 from 'aws4';
 
 const ASCII_N = 110;
 
-let originalAuth: Function | undefined = undefined;
-const connectionToCredentialsMap = new WeakMap();
+const bsonOptions =
+  mongoClientVersion === 4
+    ? {
+        promoteLongs: true,
+        promoteValues: true,
+        promoteBuffers: false,
+        bsonRegExp: false,
+      }
+    : undefined;
 
-export default function patchMongoAws(client: MongoClient, awsCredentials: Credentials) {
+function commandArgs(_ns: string, saslStart: any) {
+  return [ns(_ns), saslStart].concat(mongoClientVersion === 4 ? [undefined] : []);
+}
+
+let originalAuth: Function | undefined = undefined;
+const fakeCredentialMap = new Map<string, Credentials>();
+
+/**
+ * Returns a set of meaningless random credentials.
+ * Patches the mongo library so that, when it encounters these credentials, it uses the associated AWS.Credentials object for authentication.
+ */
+export default function getAuth(awsCredentials: Credentials) {
+  patchMongoAws();
+  const fakeUsername = crypto.randomBytes(8).toString('base64');
+  fakeCredentialMap.set(fakeUsername, awsCredentials);
+  // 3.x expects auth.user, 4.x expects auth.username
+  return { user: fakeUsername, username: fakeUsername, password: fakeUsername };
+}
+
+function patchMongoAws() {
   if (!originalAuth) {
     originalAuth = MongoDBAWS.prototype.auth;
-    // this is largely duplicated from mongodb/lib/core/auth/mongodb_aws, except the credentials used
-    // is the Credentials object we provide
+
+    /**
+     * This section of code is heavily inspired by code from node-mongodb-native, developed by MongoDB, Inc:
+     * 
+     * https://github.com/mongodb/node-mongodb-native/blob/v3.7.3/lib/core/auth/mongodb_aws.js
+     */
     MongoDBAWS.prototype.auth = async function auth(authContext: any, callback: Function) {
       const connection = authContext.connection;
       const credentials = authContext.credentials;
+
+      const awsCredentials = fakeCredentialMap.get(credentials.password);
+      if (!awsCredentials) {
+        return originalAuth!.call(this, authContext, callback);
+      }
 
       if (maxWireVersion(connection) < 9) {
         callback(new MongoError('MONGODB-AWS authentication requires MongoDB version 4.4 or later'));
@@ -40,11 +89,8 @@ export default function patchMongoAws(client: MongoClient, awsCredentials: Crede
         return callback(e);
       }
 
-      const username = awsCredentials.accessKeyId;
-      const password = awsCredentials.secretAccessKey;
       const db = credentials.source;
-      const token = awsCredentials.sessionToken;
-      const bson = this.bson;
+      const bson = BSON || this.bson;
 
       crypto.randomBytes(32, (err, nonce) => {
         if (err) {
@@ -55,14 +101,15 @@ export default function patchMongoAws(client: MongoClient, awsCredentials: Crede
         const saslStart = {
           saslStart: 1,
           mechanism: 'MONGODB-AWS',
-          payload: bson.serialize({ r: nonce, p: ASCII_N }),
+          payload: bson.serialize({ r: nonce, p: ASCII_N }, bsonOptions),
         };
 
-        connection.command(`${db}.$cmd`, saslStart, (err: Error | null, result: any) => {
+        // eslint-disable-next-line @typescript-eslint/no-shadow
+        connection.command(...commandArgs(`${db}.$cmd`, saslStart), (err: any, result: any) => {
           if (err) return callback(err);
 
-          const res = result.result;
-          const serverResponse = bson.deserialize(res.payload.buffer);
+          const res = mongoClientVersion === 4 ? result : result.result;
+          const serverResponse = bson.deserialize(res.payload.buffer, bsonOptions);
           const host = serverResponse.h;
           const serverNonce = serverResponse.s.buffer;
           if (serverNonce.length !== 64) {
@@ -98,18 +145,14 @@ export default function patchMongoAws(client: MongoClient, awsCredentials: Crede
               path: '/',
               body,
             },
-            {
-              accessKeyId: username,
-              secretAccessKey: password,
-              token,
-            },
+            awsCredentials,
           );
 
-          const authorization = options.headers.Authorization;
-          const date = options.headers['X-Amz-Date'];
+          const authorization = options.headers?.Authorization;
+          const date = options.headers?.['X-Amz-Date'];
           const payload: any = { a: authorization, d: date };
-          if (token) {
-            payload.t = token;
+          if (awsCredentials.sessionToken) {
+            payload.t = awsCredentials.sessionToken;
           }
 
           const saslContinue = {
@@ -118,7 +161,8 @@ export default function patchMongoAws(client: MongoClient, awsCredentials: Crede
             payload: bson.serialize(payload),
           };
 
-          connection.command(`${db}.$cmd`, saslContinue, (err: Error | null) => {
+          // eslint-disable-next-line @typescript-eslint/no-shadow
+          connection.command(...commandArgs(`${db}.$cmd`, saslContinue), (err: Error | null) => {
             if (err) return callback(err);
             callback();
           });

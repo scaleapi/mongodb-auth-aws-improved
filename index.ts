@@ -52,7 +52,7 @@ const fakeCredentialMap = new Map<string, Credentials>();
  * Returns a set of meaningless random credentials.
  * Patches the mongo library so that, when it encounters these credentials, it uses the associated AWS.Credentials object for authentication.
  */
-export default function getAuth(awsCredentials: Credentials) {
+export function getMongoAwsAuth(awsCredentials: Credentials) {
   patchMongoAws();
   const fakeUsername = crypto.randomBytes(8).toString('base64');
   fakeCredentialMap.set(fakeUsername, awsCredentials);

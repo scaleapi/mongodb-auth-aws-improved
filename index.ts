@@ -6,7 +6,8 @@
  * To get around this, patch the mongodb-aws auth provider internals to use a AWS.Credentials instance of our choice
  * so that when it attempts to create new connections, it can get the proper credentials.
  */
-import { Credentials } from 'aws-sdk';
+import type { Credentials as CredentialsV2 } from 'aws-sdk';
+import type { CredentialProvider as CredentialProviderV3 } from '@aws-sdk/types';
 import { MongoError } from 'mongodb';
 import crypto from 'crypto';
 
@@ -45,19 +46,38 @@ function commandArgs(_ns: string, saslStart: any) {
   return [ns(_ns), saslStart].concat(mongoClientVersion === 4 ? [undefined] : []);
 }
 
+interface IAwsCredentials {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+}
+
 let originalAuth: Function | undefined = undefined;
-const fakeCredentialMap = new Map<string, Credentials>();
+const fakeCredentialMap = new Map<string, () => Promise<IAwsCredentials>>();
 
 /**
  * Returns a set of meaningless random credentials.
  * Patches the mongo library so that, when it encounters these credentials, it uses the associated AWS.Credentials object for authentication.
  */
-export function getMongoAwsAuth(awsCredentials: Credentials) {
+export function getMongoAwsAuth(awsCredentialsOrProvider: CredentialsV2 | CredentialProviderV3) {
   patchMongoAws();
   const fakeUsername = crypto.randomBytes(8).toString('base64');
-  fakeCredentialMap.set(fakeUsername, awsCredentials);
+  fakeCredentialMap.set(fakeUsername, () => getCredentials(awsCredentialsOrProvider));
   // 3.x expects auth.user, 4.x expects auth.username
   return { user: fakeUsername, username: fakeUsername, password: fakeUsername };
+}
+
+function isCredentials(awsCredentialsOrProvider: CredentialsV2 | CredentialProviderV3): awsCredentialsOrProvider is CredentialsV2 {
+  return !!(awsCredentialsOrProvider as CredentialsV2).getPromise;
+}
+
+async function getCredentials(awsCredentialsOrProvider: CredentialsV2 | CredentialProviderV3): Promise<IAwsCredentials> {
+  if (isCredentials(awsCredentialsOrProvider)) {
+    await awsCredentialsOrProvider.getPromise();
+    return awsCredentialsOrProvider;
+  } else {
+    return awsCredentialsOrProvider();
+  }
 }
 
 function patchMongoAws() {
@@ -73,8 +93,8 @@ function patchMongoAws() {
       const connection = authContext.connection;
       const credentials = authContext.credentials;
 
-      const awsCredentials = fakeCredentialMap.get(credentials.password);
-      if (!awsCredentials) {
+      const awsCredentialsOrProvider = fakeCredentialMap.get(credentials.password);
+      if (!awsCredentialsOrProvider) {
         return originalAuth!.call(this, authContext, callback);
       }
 
@@ -83,8 +103,9 @@ function patchMongoAws() {
         return;
       }
 
+      let awsCredentials: IAwsCredentials;
       try {
-        await awsCredentials.getPromise();
+        awsCredentials = await getCredentials(awsCredentialsOrProvider);
       } catch (e) {
         return callback(e);
       }

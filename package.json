@@ -16,5 +16,8 @@
   "peerDependencies": {
     "aws-sdk": ">=2.0.0",
     "mongodb": ">=3.6.0"
+  },
+  "scripts": {
+    "build": "tsc"
   }
 }

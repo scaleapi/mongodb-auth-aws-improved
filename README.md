@@ -13,5 +13,5 @@ const { getMongoAwsAuth } = require('mongodb-auth-aws-improved');
 
 // ... retrieve AWS credentials
 
-const client = await MongoClient(uri, { auth: getMongoAwsAuth(credentials) }).connect();
+const client = await new MongoClient(uri, { auth: getMongoAwsAuth(credentials) }).connect();
 ```

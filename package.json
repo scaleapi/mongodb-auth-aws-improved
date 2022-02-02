@@ -1,9 +1,18 @@
 {
   "name": "mongodb-auth-aws-improved",
   "description": "MONGODB-AWS authentication with arbitrary refrshing credentials",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "dist/index.js",
-  "license": "MIT",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scaleapi/mongodb-auth-aws-improved.git"
+  },
+  "author": {
+	"name": "Calvin Huang",
+	"email": "calvin@scale.com"
+  },
+  "homepage": "https://github.com/scaleapi/mongodb-auth-aws-improved.git",
   "devDependencies": {
     "@types/aws4": "*",
     "@types/mongodb": "*",

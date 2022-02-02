@@ -1,5 +1,6 @@
 {
   "name": "mongodb-auth-aws-improved",
+  "description": "MONGODB-AWS authentication with arbitrary refrshing credentials",
   "version": "1.0.0",
   "main": "dist/index.js",
   "license": "MIT",
